@@ -113,6 +113,15 @@ def _row_cells(row):
     return [_cell_text(c) for c in cl if isinstance(c, list)]
 
 
+def _value_start(cells):
+    """Index of the first value column. Triggers on a price or an explicit N/A so that
+    an N/A holds its column slot (else rows missing e.g. On-Demand would shift left)."""
+    for i, c in enumerate(cells):
+        if c.startswith("$") or c.strip().lower() in ("n/a", "not available"):
+            return i
+    return len(cells)
+
+
 _HEADER_WORDS = ("On-Demand", "Spot", "CUD", "Flex", "USD", "commitment", "Price", "price")
 
 
@@ -157,15 +166,18 @@ def walk_blob(data):
             if not isinstance(r, list):
                 continue
             cells = _row_cells(r)
-            pr_idx = [i for i, x in enumerate(cells) if x.startswith("$")]
-            if not pr_idx:
+            d = _value_start(cells)
+            vcells = cells[d:]
+            if not any(x.startswith("$") for x in vcells):
                 continue
-            item = next((x for x in cells if x and not x.startswith("$")), "")
+            item = next((x for x in cells[:d] if x), cells[0] if cells else "")
             if not item:
                 continue
-            unit = "month" if any("month" in cells[i] for i in pr_idx) else "hour"
-            values = {str(k): cells[i] for k, i in enumerate(pr_idx)}
-            width = max(width, len(values))
+            unit = "month" if any("month" in x for x in vcells if x.startswith("$")) else "hour"
+            # ordinal-keyed within the value columns; N/A slots are skipped but keep
+            # their position so ordinal k means the same price type across all rows
+            values = {str(k): vcells[k] for k in range(len(vcells)) if vcells[k].startswith("$")}
+            width = max(width, len(vcells))
             key = (item, code, unit)
             if key not in by or len(values) > len(by[key]["values"]):
                 by[key] = {"item": item, "region_code": code, "region_name": region,
@@ -202,12 +214,23 @@ def extract_tables(html):
     return columns, records
 
 
+def _is_price_col(name):
+    n = name.lower()
+    return ("usd" in n or "commitment" in n or "price" in n
+            or "on demand" in n or "on-demand" in n or "spot" in n)
+
+
 def extract(html, url):
-    """Dispatch: prefer the all-region blob; fall back to visible tables."""
+    """Dispatch: prefer the all-region blob; fall back to visible tables.
+    For the blob, price-column names come from the same page's visible table
+    (identical left-to-right ordering), so ordinal k -> price_cols[k]."""
     data = find_blob(html)
     if data is not None:
-        regions, columns, records = walk_blob(data)
+        regions, _ordinals, records = walk_blob(data)
         if records:
-            return {"kind": "blob", "columns": columns, "records": records, "source_url": url}
+            tcols, _ = extract_tables(html)
+            price_cols = [c for c in tcols if _is_price_col(c)]
+            return {"kind": "blob", "columns": price_cols, "records": records,
+                    "source_url": url, "regions": regions}
     columns, records = extract_tables(html)
     return {"kind": "tables", "columns": columns, "records": records, "source_url": url}

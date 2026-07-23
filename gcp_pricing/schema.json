@@ -1,0 +1,20 @@
+{
+  "_comment": "Maps a page's price-column NAME (substring, case-insensitive) to a canonical price_type. Authored by inspecting real pages; robust to column reordering (unlike ordinal maps). First match wins, so list specific substrings before general ones. Unmatched columns keep their own cleaned name and are flagged raw=true.",
+  "name_map": [
+    ["On-Demand", "on-demand"],
+    ["On Demand", "on-demand"],
+    ["Default", "on-demand"],
+    ["Current Spot", "spot"],
+    ["Spot", "spot"],
+    ["Flex", "flex"],
+    ["Calendar", "calendar"],
+    ["3 Year", "cud-3y"],
+    ["3-year", "cud-3y"],
+    ["3 year", "cud-3y"],
+    ["1 Year", "cud-1y"],
+    ["1-year", "cud-1y"],
+    ["1 year", "cud-1y"],
+    ["GPU price", "gpu-price"],
+    ["License", "license"]
+  ]
+}
