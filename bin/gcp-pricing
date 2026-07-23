@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Portable launcher: add the skill root to PYTHONPATH so `-m gcp_pricing` resolves
+# from any cwd, then run. python3 must have beautifulsoup4 + lxml (setup.sh installs them).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$HERE:$PYTHONPATH"
+exec python3 -m gcp_pricing "$@"

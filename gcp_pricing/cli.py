@@ -25,7 +25,12 @@ def _collect(urls, product, schema, want_regions, filt, debug):
         rows = [r for r in rows if r["region_code"] in want_regions]
     if filt:
         f = filt.lower()
-        rows = [r for r in rows if f in (r["item"] or "").lower() or f in (r["price_type"] or "").lower()]
+
+        def hay(r):
+            parts = [r.get("item") or "", r.get("price_type") or ""] + (r.get("attrs", {}).get("desc") or [])
+            return " ".join(parts).lower()
+
+        rows = [r for r in rows if f in hay(r)]
     return rows, errors
 
 
@@ -37,7 +42,8 @@ def main(argv=None):
     ap.add_argument("--product", help="schema/product label to use when target is a raw URL")
     ap.add_argument("--region", action="append", default=[], help="region code filter (repeatable)")
     ap.add_argument("--all-regions", action="store_true", help="show every region")
-    ap.add_argument("--filter", help="substring filter on item or price_type")
+    ap.add_argument("--monthly", action="store_true", help="include per-month rows (default: hourly rates)")
+    ap.add_argument("--filter", help="substring filter on item, GPU model, or price_type")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--json", action="store_true", help="emit JSON rows")
     g.add_argument("--raw", action="store_true", help="emit JSON rows incl. raw/unlabeled columns")
@@ -65,6 +71,8 @@ def main(argv=None):
 
     want = None if a.all_regions else (set(a.region) if a.region else {"us-central1"})
     rows, errors = _collect(urls, product, load_schema(), want, a.filter, a.debug)
+    if not a.monthly:
+        rows = [r for r in rows if r.get("unit") != "month"]
     if not rows:
         if errors:
             print("; ".join(errors), file=sys.stderr)

@@ -63,11 +63,20 @@ def label(ex, product, schema):
             else:
                 colname = str(key)
             price_type, is_raw = _canon(colname, name_map)
-            unit = rec.get("unit") or _unit_from(raw)
+            unit = _unit_from(raw, default=(rec.get("unit") or "hour"))   # per-cell, not per-row
             rows.append({
-                "product": product, "item": rec.get("item", ""), "attrs": {},
+                "product": product, "item": rec.get("item", ""),
+                "attrs": {"desc": rec.get("desc", [])},
                 "region_code": rec.get("region_code"), "region_name": rec.get("region_name"),
                 "price_type": price_type, "unit": unit, "price": price, "currency": "USD",
                 "source_url": ex.get("source_url", ""), "fetched_at": now, "raw": is_raw,
             })
-    return rows
+    # dedupe: the page splits one region across blocks, so a rate can appear twice
+    out, seen = [], set()
+    for row in rows:
+        k = (row["item"], row["region_code"], row["price_type"], row["unit"])
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(row)
+    return out

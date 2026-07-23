@@ -177,11 +177,12 @@ def walk_blob(data):
             # ordinal-keyed within the value columns; N/A slots are skipped but keep
             # their position so ordinal k means the same price type across all rows
             values = {str(k): vcells[k] for k in range(len(vcells)) if vcells[k].startswith("$")}
+            desc = [c for c in cells[:d] if c]     # [machine, gpu model, specs] — for search
             width = max(width, len(vcells))
             key = (item, code, unit)
             if key not in by or len(values) > len(by[key]["values"]):
                 by[key] = {"item": item, "region_code": code, "region_name": region,
-                           "unit": unit, "values": values}
+                           "unit": unit, "values": values, "desc": desc}
     columns = [str(k) for k in range(width)]
     return ([{"code": c, "name": n} for c, n in regions.items()], columns, list(by.values()))
 
@@ -208,7 +209,8 @@ def extract_tables(html):
             values = {(header[i] if i < len(header) else str(i)): cells[i] for i in range(len(cells))}
             rc = next((c for c in cells if _looks_like_code(c)), None)
             records.append({"item": cells[0], "region_code": rc, "region_name": None,
-                            "unit": "", "values": values})
+                            "unit": "", "values": values,
+                            "desc": [c for c in cells if not c.startswith("$")]})
         if len(header) > len(columns):
             columns = header
     return columns, records
@@ -227,10 +229,13 @@ def extract(html, url):
     data = find_blob(html)
     if data is not None:
         regions, _ordinals, records = walk_blob(data)
-        if records:
+        # accept the blob only if rows have real item labels (a leading descriptive cell);
+        # pages like Cloud Storage lack that column, so their blob rows are junk -> use tables
+        good = [r for r in records if r["item"] and not r["item"].startswith("$")]
+        if good and len(good) >= 0.5 * len(records):
             tcols, _ = extract_tables(html)
             price_cols = [c for c in tcols if _is_price_col(c)]
-            return {"kind": "blob", "columns": price_cols, "records": records,
+            return {"kind": "blob", "columns": price_cols, "records": good,
                     "source_url": url, "regions": regions}
     columns, records = extract_tables(html)
     return {"kind": "tables", "columns": columns, "records": records, "source_url": url}
