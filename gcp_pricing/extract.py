@@ -172,3 +172,42 @@ def walk_blob(data):
                            "unit": unit, "values": values}
     columns = [str(k) for k in range(width)]
     return ([{"code": c, "name": n} for c, n in regions.items()], columns, list(by.values()))
+
+
+# ---------------------------------------------------------------- table path
+
+def _looks_like_code(s):
+    return isinstance(s, str) and any(s.startswith(h) for h in _HINT) and " " not in s
+
+
+def extract_tables(html):
+    """Extract visible <table>s (TPU/storage/Lustre etc.), regions usually as rows."""
+    soup = BeautifulSoup(html, "lxml")
+    columns, records = [], []
+    for tbl in soup.find_all("table"):
+        trs = tbl.find_all("tr")
+        if not trs:
+            continue
+        header = [c.get_text(" ", strip=True) for c in trs[0].find_all(["th", "td"])]
+        for tr in trs[1:]:
+            cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
+            if not cells:
+                continue
+            values = {(header[i] if i < len(header) else str(i)): cells[i] for i in range(len(cells))}
+            rc = next((c for c in cells if _looks_like_code(c)), None)
+            records.append({"item": cells[0], "region_code": rc, "region_name": None,
+                            "unit": "", "values": values})
+        if len(header) > len(columns):
+            columns = header
+    return columns, records
+
+
+def extract(html, url):
+    """Dispatch: prefer the all-region blob; fall back to visible tables."""
+    data = find_blob(html)
+    if data is not None:
+        regions, columns, records = walk_blob(data)
+        if records:
+            return {"kind": "blob", "columns": columns, "records": records, "source_url": url}
+    columns, records = extract_tables(html)
+    return {"kind": "tables", "columns": columns, "records": records, "source_url": url}
