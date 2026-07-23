@@ -16,20 +16,24 @@ def _run(args):
     return code, out.getvalue()
 
 
-def test_json_output_all_regions():
-    code, out = _run(["file://" + FIX, "--product", "accelerator", "--all-regions", "--json"])
+def test_json_sheets():
+    code, out = _run(["file://" + FIX, "--json"])
     assert code == 0
-    rows = json.loads(out)
-    assert rows and {"price", "price_type", "region_code", "source_url", "item"} <= set(rows[0])
+    d = json.loads(out)
+    assert d["sheets"] and d["sheets"][0]["headers"][0] == "Region"
 
 
-def test_region_filter():
-    code, out = _run(["file://" + FIX, "--product", "accelerator", "--region", "europe-west4", "--json"])
-    rows = json.loads(out)
-    assert rows and all(r["region_code"] == "europe-west4" for r in rows)
+def test_filter_is_and_over_row():
+    code, out = _run(["file://" + FIX, "--filter", "h200", "--filter", "netherlands", "--json"])
+    d = json.loads(out)
+    rows = [r for sh in d["sheets"] for r in sh["rows"]]
+    assert rows
+    for r in rows:
+        joined = " ".join(r).lower()
+        assert "h200" in joined and "netherlands" in joined
 
 
 def test_table_output_has_source_footer():
-    code, out = _run(["file://" + FIX, "--product", "accelerator", "--filter", "a3-megagpu-8g"])
+    code, out = _run(["file://" + FIX, "--filter", "a3-megagpu-8g"])
     assert code == 0
     assert "Source (open to verify)" in out and "a3-megagpu-8g" in out

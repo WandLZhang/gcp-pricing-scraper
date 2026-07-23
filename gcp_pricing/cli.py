@@ -1,15 +1,24 @@
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 
 from .resolver import resolve
 from .fetch import fetch, FetchError
 from .extract import extract
-from .label import load_schema, label
 
 
-def _collect(urls, product, schema, want_regions, filt, debug):
-    rows, errors = [], []
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _match(row, terms):
+    hay = " ".join(row).lower()
+    return all(t in hay for t in terms)
+
+
+def _collect(urls, filters, debug):
+    sheets, errors = [], []
     for u in urls:
         try:
             html = fetch(u)
@@ -18,45 +27,26 @@ def _collect(urls, product, schema, want_regions, filt, debug):
             continue
         ex = extract(html, u)
         if debug:
-            print(f"# {u}: kind={ex['kind']} records={len(ex['records'])} cols={ex.get('columns')}",
-                  file=sys.stderr)
-        rows += label(ex, product, schema)
-    if want_regions:
-        def rmatch(r):
-            hay = " ".join([r.get("region_code") or "", r.get("region_name") or "",
-                            r.get("column") or ""]).lower()
-            return any(w.lower() in hay for w in want_regions)
-        rows = [r for r in rows if rmatch(r)]
-    if filt:
-        f = filt.lower()
-
-        def hay(r):
-            parts = [r.get("item") or "", r.get("price_type") or "", r.get("column") or ""] + (r.get("context") or [])
-            return " ".join(parts).lower()
-
-        rows = [r for r in rows if f in hay(r)]
-    return rows, errors
+            print(f"# {u}: {len(ex['sheets'])} sheet(s)", file=sys.stderr)
+        for sh in ex["sheets"]:
+            rows = [r for r in sh["rows"] if _match(r, filters)] if filters else sh["rows"]
+            if rows:
+                sheets.append({"headers": sh["headers"], "rows": rows, "source_url": u})
+    return sheets, errors
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="gcp-pricing",
-        description="Live Google Cloud pricing by scraping official pricing pages (no auth).")
-    ap.add_argument("target", help="product name (tpu, accelerator, bigquery, ...) or a pricing URL")
-    ap.add_argument("--product", help="schema/product label to use when target is a raw URL")
-    ap.add_argument("--region", action="append", default=[], help="region code filter (repeatable)")
-    ap.add_argument("--all-regions", action="store_true", help="show every region")
-    ap.add_argument("--filter", help="substring filter on item, GPU model, column, or price_type")
-    g = ap.add_mutually_exclusive_group()
-    g.add_argument("--json", action="store_true", help="emit JSON rows")
-    g.add_argument("--raw", action="store_true", help="emit JSON rows incl. raw/unlabeled columns")
-    ap.add_argument("--verify", action="store_true",
-                    help="cross-check vs Billing Catalog API (needs a gcloud token)")
+        description="Raw Google Cloud pricing scraped from official pages (no auth, no interpretation).")
+    ap.add_argument("target", help="product name (tpu, accelerator, gpu, bigquery, ...) or a pricing URL")
+    ap.add_argument("--filter", action="append", default=[],
+                    help="substring row filter, repeatable (AND). e.g. --filter h200 --filter netherlands")
+    ap.add_argument("--json", action="store_true", help="emit raw JSON sheets")
     ap.add_argument("--debug", action="store_true")
     a = ap.parse_args(argv)
 
     r = resolve(a.target)
-    product = a.product or r["product"]
     urls = r["urls"]
     if r["resolved_by"] == "pattern":
         good = []
@@ -72,38 +62,35 @@ def main(argv=None):
             return 3
         urls = good[:1]
 
-    # default: no region filter — return everything, hide nothing. --region narrows.
-    want = None if a.all_regions else (set(a.region) or None)
-    rows, errors = _collect(urls, product, load_schema(), want, a.filter, a.debug)
-    if not rows:
+    filters = [f.lower() for f in a.filter]
+    sheets, errors = _collect(urls, filters, a.debug)
+    if not sheets:
         if errors:
             print("; ".join(errors), file=sys.stderr)
             return 4
-        print("no matching rows (try --all-regions or --filter)", file=sys.stderr)
+        print("no rows matched " + (repr(a.filter) if a.filter else "(no price tables on page)"),
+              file=sys.stderr)
         return 0
 
-    if a.verify:
-        from .verify import verify
-        rows = rows + verify(rows)
-
-    if a.json or a.raw:
-        print(json.dumps(rows, indent=2))
+    if a.json:
+        print(json.dumps({"fetched_at": _now(), "sheets": sheets}, indent=2))
     else:
-        _print_table(rows)
+        _print_sheets(sheets)
     return 0
 
 
-def _print_table(rows):
-    if not rows:
-        print("no rows")
-        return
-    hdr = ["item", "region_code", "price_type", "value"]
-    widths = {h: max(len(h), max(len(str(r.get(h, ""))) for r in rows)) for h in hdr}
-    print("  ".join(h.ljust(widths[h]) for h in hdr))
-    for r in rows:
-        print("  ".join(str(r.get(h, "")).ljust(widths[h]) for h in hdr))
-    # Source footer so the agent can point the user to the page to eye-check numbers.
-    srcs = sorted({r["source_url"] for r in rows if r.get("source_url")})
-    ts = next((r["fetched_at"] for r in rows if r.get("fetched_at")), "")
-    if srcs:
-        print("\nSource (open to verify): " + " ; ".join(srcs) + (f"  [fetched {ts}]" if ts else ""))
+def _print_sheets(sheets):
+    for sh in sheets:
+        hdr, rows = sh["headers"], sh["rows"]
+        ncol = max([len(hdr)] + [len(r) for r in rows])
+        cols = [hdr[i] if i < len(hdr) else f"col{i}" for i in range(ncol)]
+        widths = [max(len(cols[i]), max((len(r[i]) for r in rows if i < len(r)), default=0))
+                  for i in range(ncol)]
+
+        def line(vals):
+            return "  ".join((vals[i] if i < len(vals) else "").ljust(widths[i]) for i in range(ncol))
+
+        print(line(cols))
+        for r in rows:
+            print(line(r))
+        print(f"\nSource (open to verify): {sh['source_url']}\n")
