@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gcp-pricing-scraper"
+version = "0.1.0"
+description = "Raw Google Cloud pricing scraped from official pricing pages (no auth, no interpretation)."
+requires-python = ">=3.9"
+dependencies = ["beautifulsoup4>=4.12", "lxml>=5.0"]
+
+[project.scripts]
+gcp-pricing = "gcp_pricing.cli:main"
+gcp-pricing-scraper = "gcp_pricing.cli:main"
+
+[tool.setuptools]
+packages = ["gcp_pricing"]
