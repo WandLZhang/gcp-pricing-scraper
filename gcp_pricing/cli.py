@@ -21,13 +21,17 @@ def _collect(urls, product, schema, want_regions, filt, debug):
             print(f"# {u}: kind={ex['kind']} records={len(ex['records'])} cols={ex.get('columns')}",
                   file=sys.stderr)
         rows += label(ex, product, schema)
-    if want_regions is not None:
-        rows = [r for r in rows if r["region_code"] in want_regions]
+    if want_regions:
+        def rmatch(r):
+            hay = " ".join([r.get("region_code") or "", r.get("region_name") or "",
+                            r.get("column") or ""]).lower()
+            return any(w.lower() in hay for w in want_regions)
+        rows = [r for r in rows if rmatch(r)]
     if filt:
         f = filt.lower()
 
         def hay(r):
-            parts = [r.get("item") or "", r.get("price_type") or ""] + (r.get("attrs", {}).get("desc") or [])
+            parts = [r.get("item") or "", r.get("price_type") or "", r.get("column") or ""] + (r.get("context") or [])
             return " ".join(parts).lower()
 
         rows = [r for r in rows if f in hay(r)]
@@ -42,8 +46,7 @@ def main(argv=None):
     ap.add_argument("--product", help="schema/product label to use when target is a raw URL")
     ap.add_argument("--region", action="append", default=[], help="region code filter (repeatable)")
     ap.add_argument("--all-regions", action="store_true", help="show every region")
-    ap.add_argument("--monthly", action="store_true", help="include per-month rows (default: hourly rates)")
-    ap.add_argument("--filter", help="substring filter on item, GPU model, or price_type")
+    ap.add_argument("--filter", help="substring filter on item, GPU model, column, or price_type")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--json", action="store_true", help="emit JSON rows")
     g.add_argument("--raw", action="store_true", help="emit JSON rows incl. raw/unlabeled columns")
@@ -69,10 +72,9 @@ def main(argv=None):
             return 3
         urls = good[:1]
 
-    want = None if a.all_regions else (set(a.region) if a.region else {"us-central1"})
+    # default: no region filter — return everything, hide nothing. --region narrows.
+    want = None if a.all_regions else (set(a.region) or None)
     rows, errors = _collect(urls, product, load_schema(), want, a.filter, a.debug)
-    if not a.monthly:
-        rows = [r for r in rows if r.get("unit") != "month"]
     if not rows:
         if errors:
             print("; ".join(errors), file=sys.stderr)
@@ -95,7 +97,7 @@ def _print_table(rows):
     if not rows:
         print("no rows")
         return
-    hdr = ["item", "region_code", "price_type", "price", "unit"]
+    hdr = ["item", "region_code", "price_type", "value"]
     widths = {h: max(len(h), max(len(str(r.get(h, ""))) for r in rows)) for h in hdr}
     print("  ".join(h.ljust(widths[h]) for h in hdr))
     for r in rows:

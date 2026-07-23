@@ -232,9 +232,12 @@ def extract(html, url):
         # accept the blob only if rows have real item labels (a leading descriptive cell);
         # pages like Cloud Storage lack that column, so their blob rows are junk -> use tables
         good = [r for r in records if r["item"] and not r["item"].startswith("$")]
-        if good and len(good) >= 0.5 * len(records):
-            tcols, _ = extract_tables(html)
-            price_cols = [c for c in tcols if _is_price_col(c)]
+        tcols, _ = extract_tables(html)
+        price_cols = [c for c in tcols if _is_price_col(c)]
+        # trust the all-region blob only when rows have real item labels AND we can name
+        # its columns from the page's own headers; otherwise the visible tables (with their
+        # real headers) are the more faithful, less-invented source.
+        if good and len(good) >= 0.5 * len(records) and price_cols:
             return {"kind": "blob", "columns": price_cols, "records": good,
                     "source_url": url, "regions": regions}
     columns, records = extract_tables(html)

@@ -31,11 +31,16 @@ pass the pricing URL directly, or the tool will pattern-guess it.
 
 ## Notes for the agent
 
-- Default output is a table; add `--json` for structured rows.
-- Default shows `us-central1`; use `--region` (repeatable) or `--all-regions`.
+- **Raw numbers, any structure.** Every row carries the page's own `column` label and its
+  raw `value` string (e.g. `"$93.40 / 1 hour"`) **verbatim — these are authoritative.**
+  `price_type`, `price`, `unit` are best-effort conveniences layered on top; if they ever
+  disagree with `value`, trust `value`. This is deliberate: pages differ wildly (some list
+  regions as rows, some as columns), so the tool surfaces the real cells and lets *you*
+  interpret rather than over-normalizing and risking a wrong label.
+- Default returns **all regions — nothing is hidden**. Narrow with `--region` (repeatable;
+  matches a region code, a region name, or a column like `Europe`) or `--filter`.
+- Default output is a table; add `--json` for structured rows (preferred for reasoning).
 - Every row carries `source_url` + `fetched_at`, and the table prints a `Source:` footer —
   **share that link so the user can open the page and eye-check the numbers themselves.**
-- `price_type` values: `on-demand, spot, flex, calendar, cud-1y, cud-3y` (compute/TPU).
-  Unrecognized columns keep the page's own label and are flagged `"raw": true`.
 - `--verify` cross-checks against the Billing Catalog API (needs a gcloud token); off by default.
 - No credentials required for normal use.

@@ -32,9 +32,20 @@ def test_tpu_on_demand_labeled(tpu_html):
     assert tri and all(r["price"] > 0 for r in tri)
 
 
-def test_unknown_column_marked_raw():
+def test_rows_carry_raw_value_and_column(accel_html):
+    rows = label(extract(accel_html, "u"), "accelerator", load_schema())
+    r = next(r for r in rows if r["item"] == "a3-megagpu-8g" and r["price_type"] == "on-demand")
+    assert r["value"].startswith("$") and "/" in r["value"]   # raw page string, intact
+    assert "USD" in r["column"]                                # page's own column label
+
+
+def test_unknown_column_kept_verbatim():
     ex = {"kind": "blob", "columns": ["Weird Metric"], "source_url": "u",
           "records": [{"item": "x", "region_code": "us-central1", "region_name": None,
-                       "unit": "hour", "values": {"0": "$1.00 / 1 hour"}}]}
+                       "unit": "hour", "desc": ["x"], "values": {"0": "$1.00 / 1 hour"}}]}
     rows = label(ex, "accelerator", load_schema())
-    assert rows and all(r["raw"] and r["price_type"] == "Weird Metric" for r in rows)
+    assert rows
+    r = rows[0]
+    assert r["column"] == "Weird Metric"      # page's own label preserved verbatim
+    assert r["value"] == "$1.00 / 1 hour"     # raw string preserved
+    assert r["price_type"] == "Weird Metric"  # convenience label falls back to the raw column

@@ -62,19 +62,29 @@ def label(ex, product, schema):
                 colname = cols[int(key)]
             else:
                 colname = str(key)
-            price_type, is_raw = _canon(colname, name_map)
-            unit = _unit_from(raw, default=(rec.get("unit") or "hour"))   # per-cell, not per-row
+            price_type, _ = _canon(colname, name_map)
+            unit = _unit_from(raw, default=(rec.get("unit") or "hour"))
+            item = rec.get("item", "")
             rows.append({
-                "product": product, "item": rec.get("item", ""),
-                "attrs": {"desc": rec.get("desc", [])},
-                "region_code": rec.get("region_code"), "region_name": rec.get("region_name"),
-                "price_type": price_type, "unit": unit, "price": price, "currency": "USD",
-                "source_url": ex.get("source_url", ""), "fetched_at": now, "raw": is_raw,
+                "product": product,
+                "item": item,
+                "context": [c for c in rec.get("desc", []) if c and c != item],
+                "region_code": rec.get("region_code"),
+                "region_name": rec.get("region_name"),
+                # authoritative: exactly what the page says
+                "column": colname,
+                "value": raw,
+                # convenience only (best-effort; never hides `column`/`value`)
+                "price_type": price_type,
+                "price": price,
+                "unit": unit,
+                "currency": "USD",
+                "source_url": ex.get("source_url", ""), "fetched_at": now,
             })
-    # dedupe: the page splits one region across blocks, so a rate can appear twice
+    # drop only exact duplicates (a page splits one region across blocks)
     out, seen = [], set()
     for row in rows:
-        k = (row["item"], row["region_code"], row["price_type"], row["unit"])
+        k = (row["item"], row["region_code"], row["column"], row["value"])
         if k in seen:
             continue
         seen.add(k)
