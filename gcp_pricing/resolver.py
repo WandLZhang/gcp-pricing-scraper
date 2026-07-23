@@ -8,7 +8,7 @@ from .registry import PRODUCTS, ALIASES, BASE
 
 def resolve(token):
     t = token.strip()
-    if t.startswith("http://") or t.startswith("https://"):
+    if "://" in t:      # any URL scheme (https, http, file) passes straight through
         return {"product": t, "urls": [t], "resolved_by": "passthrough", "note": None}
     key = ALIASES.get(t.lower(), t.lower())
     if key in PRODUCTS:
