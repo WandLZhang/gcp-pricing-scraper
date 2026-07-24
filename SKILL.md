@@ -1,50 +1,87 @@
 ---
 name: gcp-pricing
-description: Get live Google Cloud pricing for ANY product (VMs, GPUs, TPUs, BigQuery, storage, Lustre, Spanner, ...). Use whenever asked for a GCP price, cost, rate, or $/hr - the official pricing pages are JS-rendered so WebFetch fails; this scrapes their embedded data instead.
+description: Get live Google Cloud pricing, terms, and eligibility rules for ANY product (VMs, GPUs, TPUs, BigQuery, storage, Spark, Vertex/Agent Platform, support tiers). Use whenever asked for a GCP price, cost, rate, $/hr, minimum, or discount eligibility - the official pages are JS-rendered so WebFetch returns an empty shell.
 ---
 
 # gcp-pricing
 
-A zero-auth CLI that returns current Google Cloud pricing by scraping the official
-`cloud.google.com/**/pricing` pages (their numbers are embedded in the page; WebFetch
-only sees the empty shell). All regions, every column the page shows.
-
-## Use it
-
-Run the CLI with your Bash tool and read stdout:
+Captures a Google Cloud pricing page **whole** and writes it to a file you can grep. No auth.
+No interpretation. Nothing dropped.
 
 ```
-gcp-pricing <product|url> [--filter TEXT ...] [--json]
+gcp-pricing <product|url> [--filter TEXT ...] [--catalog] [--json] [--limit N]
 ```
 
-Examples:
-- `gcp-pricing accelerator --filter h200 --filter netherlands`
-- `gcp-pricing gpu --filter h100 --json`
-- `gcp-pricing tpu --filter Trillium`  (TPU incl. Ironwood/v7 + Trillium, absent from the billing API)
-- `gcp-pricing bigquery --filter slot`
-- `gcp-pricing storage --filter rapid`
-- `gcp-pricing https://cloud.google.com/spanner/pricing`  (any page by URL)
+Every run writes the complete capture to `/tmp/gcp-pricing/<page>.txt` and prints the path.
+`--filter` only controls what is echoed to stdout — **the file always has everything.**
 
-Known names: `vms, accelerator, gpu, tpu, storage, lustre, parallelstore, bigquery,
-cloud-run, gke, spanner, cloud-sql, vertex-ai` (plus aliases). Anything else: pass the
-pricing URL directly, or the tool will pattern-guess it.
+The capture holds, in order:
+1. the whole page as readable markdown — headings, prose, lists, and **every** table
+   (including tables with no `$` in them: minimum durations, free tiers, eligibility lists);
+2. every row from the page's inline JSON blob, tab-separated, one per line — the only source
+   of non-default regions.
 
-## How to read the output - IMPORTANT
+## Work the file, not the tool
 
-The tool does **no interpretation**. It returns the page's own **column headers** and the
-**raw cell strings, verbatim**, as one or more `sheets` of `{headers, rows}`. YOU read the
-table: find the header for the price type you want, read the cell beneath it. A cell may be
-`"-"` (not offered - e.g. H200 has no On-Demand in some regions) or `"$X / 1 hour"`; the
-dash holds its column slot so nothing shifts.
+The general-purpose page captures to ~6.7 MB / 9,364 region rows. Don't ask the tool to
+find things for you — grep the capture:
 
-This is deliberate. Pricing pages are dynamic and vary wildly (regions as rows or as
-columns; different column sets per product), so any canonical labeling on the tool's side
-would be brittle and could silently mislabel. The LLM reading the table is the robust
-interpreter - the tool's only job is faithful extraction.
+```bash
+gcp-pricing general-purpose --filter "zzz"          # capture, echo nothing
+F=/tmp/gcp-pricing/cloud.google.com_products_compute_pricing_general-purpose*.txt
+grep -P '^Northern Virginia' $F | grep -oP '\S+-8\t8\t16 GiB\t\$[\d.]+' | sort -t'$' -k2 -g
+```
 
-- Every sheet prints a `Source (open to verify)` URL - **share it so the user can open the
-  page and eye-check the numbers.**
-- `--filter` is a plain substring match over a whole row; repeat for AND
-  (`--filter h200 --filter netherlands`). All regions/columns are included by default.
-- `--json` emits the raw sheets for programmatic reasoning.
-- No credentials required, ever.
+That returns every 8 vCPU / 16 GiB shape in us-east4, cheapest first. Which is the query
+that matters.
+
+## Operating rules
+
+These exist because each one was violated in a real analysis and cost a wrong number.
+
+- **Query by requirement, never by name.** List every candidate meeting the spec and sort by
+  price *before* choosing. If a SKU name appears in your query before the spec does, stop —
+  that is how `n4a-highcpu-8` ($0.25984) got missed in favour of `c4a-highcpu-8` ($0.30304).
+- **A page omission is not a product limit.** Pages and the Billing Catalog API each omit
+  what the other has. Before writing "not available", check `--catalog` and
+  `gcloud compute accelerator-types list --filter="zone~REGION"`. The Agent Platform page's
+  us-east4 table lists no T4; the catalog prices it at $0.444/hr.
+- **Do not inherit a third party's service mapping.** Verify the engine matches before
+  pricing their named target. AWS Glue runs Spark; Dataflow runs Beam — that mapping was a
+  rewrite, not a migration, and priced the wrong service.
+- **Sweep every dimension per line item**: region · machine family or storage class ·
+  commitment (on-demand / Flex CUD / Resource CUD) · tier · batch / Spot. Storage class alone
+  was worth −$512/mo; the model ladder −$490/mo.
+- **Never state a rate from memory** when a page exists. Support tiers were written from
+  recall and came out as the wrong product's structure.
+- **When the tool falls short, ask for the page immediately.** One turn: "paste me X." Do not
+  burn turns on WebFetch (it summarizes and drops tables) or assert and hope.
+- **Re-grep your own artifact for superseded strings** after every correction round.
+
+## Second source
+
+```
+gcp-pricing notebooks --catalog --filter "gpu" --filter "t4 in us-east4"
+```
+
+Queries the Cloud Billing Catalog API via `gcloud auth print-access-token`. Known service
+IDs are in `registry.py` (Notebooks `D73B-5EEA-8215`, Compute Engine `6F81-5844-456A`);
+anything else is found by scanning `displayName`. Substring filters are literal — `t4` also
+matches `us-east4`, so filter on `t4 in us-east4`.
+
+## Product names
+
+`vms · general-purpose · accelerator · gpu · tpu · storage · lustre · parallelstore ·
+bigquery · cloud-run · gke · spanner · cloud-sql · vertex-ai · generative-ai ·
+managed-spark · dataflow · support · sud` (plus aliases: `dataproc`→`managed-spark`,
+`agent-platform`/`workbench`→`vertex-ai`, `gemini`/`claude`→`generative-ai`, …).
+
+Anything else: pass the URL. `docs.cloud.google.com` pages work too — that is where
+eligibility rules live (e.g. `sud` → sustained use discounts).
+
+## Develop
+
+```bash
+python tests/capture_fixtures.py     # real page captures, gitignored
+PYTHONPATH=. python3 -m pytest -q
+```

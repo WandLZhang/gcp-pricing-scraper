@@ -29,3 +29,19 @@ def bigquery_html():
 @pytest.fixture
 def storage_html():
     return _load("storage.html")
+
+
+@pytest.fixture
+def gpus_html():
+    return _load("gpus.html")
+
+
+@pytest.fixture
+def managed_spark_html():
+    return _load("managed-spark.html")
+
+
+@pytest.fixture(scope="session")
+def general_purpose_html():
+    """32 MB; session-scoped so the whole suite pays the read once."""
+    return _load("general-purpose.html")

@@ -1,21 +1,30 @@
-"""Extract raw pricing data from a GCP pricing page — verbatim, no interpretation.
+"""Capture a GCP pricing page. Do not select, do not interpret.
 
-Philosophy: the page structure is dynamic and product-specific. Any attempt to map
-columns to canonical price types, align cells, or normalize values is brittle and WILL
-break when Google changes the layout. So we do none of that. We return the page's own
-column headers and the raw cell strings, aligned only in the order the page presents them,
-and let the consuming agent read the table itself.
+The old version tried to find "the pricing table" and threw the rest away: it kept a
+<table> only if it contained a "$", it never read prose, and it walked the inline JSON
+guessing which nested list was the real one. That silently lost minimum storage durations,
+free-tier limits, worked examples that define billing units, and 13 of 14 machine families.
 
-Two sources, both browserless:
-- The inline JSON blob (compute families, BigQuery, Cloud Run): holds every region.
-- Visible <table>s (TPU, storage, Spanner, ...): dumped verbatim.
+So this module does the least possible:
+
+  text     the whole page as readable markdown - every heading, paragraph, list item and
+           table, in document order, no filtering. Copy-paste parity.
+  regions  rows recovered from the inline JSON blob, which is the only place the page keeps
+           its non-default regions. Every region-bearing row is emitted; near-duplicates are
+           left in. The reader dedupes, not the tool.
+
+Both are raw. Deciding what matters is the caller's job.
 """
 import json
-from bs4 import BeautifulSoup
+import re
+from bs4 import BeautifulSoup, NavigableString
 
 _HINT = ("us-", "europe-", "asia-", "africa-", "me-", "australia-",
          "northamerica-", "southamerica-")
-_PLACEHOLDERS = ("n/a", "not available", "-", "—", "–", "")
+
+# Chrome that appears on every cloud.google.com page and carries no pricing signal.
+_SKIP_TAGS = ("script", "style", "noscript", "nav", "footer", "svg", "form", "iframe")
+_BLOCK = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "pre", "blockquote", "dt", "dd")
 
 
 def _is_region_label(s):
@@ -37,22 +46,78 @@ def _all_strings(node):
 
 
 def _strip_tags(s):
-    # remove HTML tags only (the blob wraps cells in <p>...); not price parsing
     return BeautifulSoup(s, "lxml").get_text(" ", strip=True) if "<" in s else s.strip()
 
 
-def _has_price(node):
-    return any(x.strip().startswith("$") for x in _all_strings(node))
+# ---------------------------------------------------------------- visible page -> markdown
+
+def _table_md(tbl):
+    """A <table> as a markdown table. Every table, priced or not."""
+    trs = tbl.find_all("tr")
+    if not trs:
+        return None
+    rows = []
+    for tr in trs:
+        cells = [c.get_text(" ", strip=True).replace("|", "\\|").replace("\xa0", " ")
+                 for c in tr.find_all(["td", "th"])]
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return None
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    head, body = rows[0], rows[1:]
+    out = ["| " + " | ".join(head) + " |",
+           "|" + "---|" * width]
+    for r in body:
+        out.append("| " + " | ".join(r) + " |")
+    return "\n".join(out)
 
 
-def _count_prices(node):
-    return sum(1 for x in _all_strings(node) if x.strip().startswith("$"))
+def page_text(html):
+    """The whole readable page, in document order: headings, prose, lists, and ALL tables.
 
+    No price gate. Minimum-duration tables, eligibility lists, free-tier limits and the
+    worked examples that define billing units have no "$" in them and were the exact things
+    the previous implementation discarded.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    for t in soup.find_all(_SKIP_TAGS):
+        t.decompose()
 
-# ---------------------------------------------------------------- visible tables
+    parts, seen = [], set()
+
+    def emit(s):
+        s = re.sub(r"[ \t\xa0]+", " ", s).strip()
+        if not s or s in seen:
+            return
+        seen.add(s)
+        parts.append(s)
+
+    for el in soup.find_all(_BLOCK + ("table",)):
+        # a block nested inside a table is rendered by the table itself
+        if el.name != "table" and el.find_parent("table"):
+            continue
+        if el.name == "table":
+            md = _table_md(el)
+            if md:
+                parts.append(md)      # tables bypass dedupe: identical shapes are common
+            continue
+        txt = el.get_text(" ", strip=True)
+        if not txt:
+            continue
+        if el.name.startswith("h") and len(el.name) == 2 and el.name[1].isdigit():
+            emit("#" * int(el.name[1]) + " " + txt)
+        elif el.name == "li":
+            emit("- " + txt)
+        else:
+            emit(txt)
+
+    return "\n\n".join(parts)
+
 
 def table_sheets(html):
-    """Every visible <table> that contains a price, dumped verbatim as {headers, rows}."""
+    """Every visible <table>, as {headers, rows}. No price filter."""
     soup = BeautifulSoup(html, "lxml")
     sheets = []
     for tbl in soup.find_all("table"):
@@ -65,25 +130,16 @@ def table_sheets(html):
             cells = [c.get_text(" ", strip=True) for c in tr.find_all(["td", "th"])]
             if cells:
                 rows.append(cells)
-        if rows and any("$" in c for row in rows for c in row):
-            sheets.append({"headers": headers, "rows": rows})
+        if rows:
+            sheets.append({"headers": headers, "rows": rows,
+                           "priced": any("$" in c for row in rows for c in row)})
     return sheets
-
-
-def _widest_headers(html):
-    """The widest visible header row (the compute machine table) — used to label blob rows,
-    which the page lays out in the same column order."""
-    best = []
-    for s in table_sheets(html):
-        if len(s["headers"]) > len(best):
-            best = s["headers"]
-    return best
 
 
 # ---------------------------------------------------------------- inline blob
 
 def find_blob(html):
-    """Return the decoded inline JSON pricing array, or None."""
+    """The decoded inline JSON pricing array (holds every region), or None."""
     soup = BeautifulSoup(html, "lxml")
     best = None
     for sc in soup.find_all("script"):
@@ -106,108 +162,53 @@ def _lists(node):
             yield from _lists(e)
 
 
-def _cell_text(cell):
-    for s in _all_strings(cell):
-        txt = _strip_tags(s)
-        if txt:
-            return txt
-    return ""
-
-
-def _region_of(node):
-    for s in _all_strings(node):
-        if _is_region_label(s):
-            return s
-    return None
-
-
-def _rows_list(block):
-    best = None
-    for lst in _lists(block):
-        pc = sum(1 for c in lst if isinstance(c, list) and _has_price(c))
-        if pc >= 2 and (best is None or pc > best[0]):
-            best = (pc, lst)
-    return best[1] if best else None
-
-
-def _cells_list(row):
-    best = None
-    for lst in _lists(row):
-        cnt = sum(1 for c in lst if isinstance(c, list) and _cell_text(c))
-        if cnt and (best is None or cnt > best[0]):
-            best = (cnt, lst)
-    return best[1] if best else None
-
-
-def _row_cells(row):
-    cl = _cells_list(row)
-    return [_cell_text(c) for c in cl if isinstance(c, list)] if cl else []
-
-
-def _blocks_list(data):
-    """The list whose children are per-region blocks (each: a region label + several prices)."""
-    best = None
-    for lst in _lists(data):
-        cnt = sum(1 for c in lst if isinstance(c, list) and _region_of(c) and _count_prices(c) >= 4)
-        if cnt >= 2 and (best is None or cnt > best[0]):
-            best = (cnt, lst)
-    return best[1] if best else None
-
-
 def walk_blob(data):
-    """Raw per-region rows: [(region_label, [cell, cell, ...]), ...], cells verbatim.
+    """Every region-bearing row in the blob: [(region, [cell, ...]), ...].
 
-    One row per (region, item), keeping the widest hourly row — the page fragments a single
-    logical row across sub-blocks (and a monthly mirror). This is reassembly of the page's
-    own row, not interpretation: cells are never relabeled, reordered, or normalized.
+    Shape-agnostic on purpose. A "row" is any list whose descendants include exactly one
+    region label and at least one non-empty leaf; its cells are those leaves in document
+    order. No scoring, no picking a best block, no dedupe - all three of those are how the
+    previous version lost 13 of 14 machine families.
     """
-    blocks = _blocks_list(data)
-    if blocks is None:
+    if data is None:
         return []
-    by = {}
-    for block in blocks:
-        region = _region_of(block)
-        if not region:
+    out = []
+    for lst in _lists(data):
+        regions = [s for s in _all_strings(lst) if _is_region_label(s)]
+        if len(regions) != 1:
             continue
-        rl = _rows_list(block)
-        if rl is None:
-            continue
-        for r in rl:
-            if not isinstance(r, list):
+        # innermost list carrying exactly one region: its non-region leaves are the cells
+        if any(len([s for s in _all_strings(c) if _is_region_label(s)]) == 1
+               for c in lst if isinstance(c, list)):
+            continue                       # an ancestor of the real row; skip
+        cells = []
+        for s in _all_strings(lst):
+            if _is_region_label(s):
                 continue
-            cells = _row_cells(r)
-            price_cells = [c for c in cells if c.startswith("$")]
-            if not price_cells:
-                continue
-            item = next((c for c in cells if c and not c.startswith("$")
-                         and c.strip().lower() not in _PLACEHOLDERS), "")
-            if not item:
-                continue
-            monthly = any("month" in c for c in price_cells)
-            score = (0 if monthly else 1, len(price_cells))   # prefer hourly, then widest
-            key = (region, item)
-            if key not in by or score > by[key][0]:
-                by[key] = (score, cells)
-    return [(region, cells) for (region, _item), (_score, cells) in
-            ((k, v) for k, v in by.items())]
+            txt = _strip_tags(s)
+            if txt:
+                cells.append(txt)
+        if cells:
+            out.append((regions[0], cells))
+    return out
 
 
 # ---------------------------------------------------------------- dispatch
 
 def extract(html, url):
-    """Return {source_url, sheets:[{headers, rows}]} — raw, verbatim.
-
-    Compute/BigQuery/Cloud Run pages -> one sheet from the all-region blob, labeled with the
-    page's own header row (blob columns follow the same order). Everything else -> the visible
-    tables dumped as-is. No canonicalization anywhere.
-    """
-    data = find_blob(html)
-    if data is not None:
-        rows = walk_blob(data)
-        good = [c for _r, c in rows if c and c[0] and not c[0].startswith("$")]
-        headers = _widest_headers(html)
-        if good and headers:
-            sheet = {"headers": ["Region"] + headers,
-                     "rows": [[region] + cells for region, cells in rows]}
-            return {"source_url": url, "sheets": [sheet]}
-    return {"source_url": url, "sheets": table_sheets(html)}
+    """{source_url, text, regions, tables} - captured, not curated."""
+    tables = table_sheets(html)
+    text = page_text(html)
+    regions = walk_blob(find_blob(html))
+    return {
+        "source_url": url,
+        "text": text,
+        "regions": [{"region": r, "cells": c} for r, c in regions],
+        "tables": tables,
+        "coverage": {
+            "tables": len(tables),
+            "tables_priced": sum(1 for t in tables if t["priced"]),
+            "region_rows": len(regions),
+            "text_chars": len(text),
+        },
+    }
