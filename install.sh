@@ -30,12 +30,18 @@ else
   python3 -m pip install --user --break-system-packages --quiet "$REPO"
 fi
 
-# ensure ~/.local/bin is on PATH for future shells
+# ensure ~/.local/bin is on PATH for future shells.
+# .bashrc alone is not enough: agents that exec commands in a NON-interactive shell never
+# source it (Debian's .bashrc even returns early for those), so `gcp-pricing` came back
+# "command not found" for a Cline-style background exec. Write .profile as well so login
+# shells - and anything a desktop session inherits from them - pick it up. SKILL.md also
+# documents the absolute-path fallback, which needs no environment cooperation at all.
 mkdir -p "$HOME/.local/bin"
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) : ;;
-  *) echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc" ;;
-esac
+LINE='export PATH="$HOME/.local/bin:$PATH"'
+for rc in "$HOME/.bashrc" "$HOME/.profile"; do
+  [ -e "$rc" ] || : > "$rc"
+  grep -qF '.local/bin:$PATH' "$rc" 2>/dev/null || echo "$LINE" >> "$rc"
+done
 # some setups (claude-code) use ~/bin — mirror the launcher there if that dir exists
 if [ -d "$HOME/bin" ] && command -v gcp-pricing >/dev/null 2>&1; then
   ln -sf "$(command -v gcp-pricing)" "$HOME/bin/gcp-pricing" 2>/dev/null || true

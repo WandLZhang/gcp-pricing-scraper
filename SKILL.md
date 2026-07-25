@@ -12,6 +12,11 @@ No interpretation. Nothing dropped.
 gcp-pricing <product|url> [--filter TEXT ...] [--catalog] [--json] [--limit N]
 ```
 
+**If `gcp-pricing` is not found, run `~/.local/bin/gcp-pricing` instead** — that is where the
+installer puts it. Agents that execute commands in a non-interactive shell do not source
+`~/.bashrc`, so PATH can be missing it even though the tool is installed. The absolute path
+always works; do not conclude the tool is unavailable.
+
 Every run writes the complete capture to `/tmp/gcp-pricing/<page>.txt` and prints the path.
 `--filter` only controls what is echoed to stdout — **the file always has everything.**
 
