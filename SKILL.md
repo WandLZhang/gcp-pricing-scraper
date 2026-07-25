@@ -35,6 +35,36 @@ grep -P '^Northern Virginia' $F | grep -oP '\S+-8\t8\t16 GiB\t\$[\d.]+' | sort -
 That returns every 8 vCPU / 16 GiB shape in us-east4, cheapest first. Which is the query
 that matters.
 
+## The one rule: never strip context off a number
+
+Every wrong number traced back to something that removed a value's coordinates:
+
+| What stripped it | What was lost |
+|---|---|
+| a `$`-gate in the extractor | 5 tables, incl. minimum storage durations |
+| a block-picker choosing "the" table | 13 of 14 machine families |
+| WebFetch | whole tables |
+| filtering by a SKU name chosen in advance | the cheaper candidate |
+| `grep -oP` | the region prefix — a DCU rate was read from an arbitrary region |
+| `head -2` | the 40 other matching regions, which would have shown the query was ambiguous |
+
+So:
+
+- **Grep whole lines. Never `-o`.** Every captured line already carries its region, item,
+  unit and value. A fragment does not, and a fragment that looks like an answer is how a
+  wrong number ships silently.
+- **Never `head` a result you are about to quote.** Count first (`| wc -l`). If a query for
+  one number returns many rows, the query is under-specified — that is the signal, and
+  truncating destroys it.
+- **More than one distinct value for what should be one number = stop.** Pin the missing
+  coordinate (usually region) and re-run.
+- **When a number matters, read its raw line.** Not a summary, not a rendered table — the
+  line in the capture file.
+
+Pages also print every rate twice, hourly and monthly at exactly x730. If a value needs
+confirming, grep both lines and look at them. Do not build a reconciler; that is more
+processing, and processing is what caused all of this.
+
 ## Operating rules
 
 These exist because each one was violated in a real analysis and cost a wrong number.
