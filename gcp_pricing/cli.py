@@ -93,14 +93,31 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="gcp-pricing",
         description="Capture a Google Cloud pricing page whole. No auth, no interpretation.")
-    ap.add_argument("target", help="product name (vms, gpu, tpu, storage, managed-spark, ...) or any URL")
+    ap.add_argument("target", nargs="?",
+                    help="product name (vms, gpu, tpu, storage, managed-spark, ...) or any URL")
     ap.add_argument("--filter", action="append", default=[],
                     help="substring filter, repeatable (AND). Filters stdout only; the file always has everything.")
     ap.add_argument("--catalog", action="store_true",
                     help="query the Cloud Billing Catalog API instead (carries SKUs pages omit)")
     ap.add_argument("--json", action="store_true", help="raw structured output on stdout")
     ap.add_argument("--limit", type=int, default=200, help="max lines echoed to stdout (default 200)")
+    ap.add_argument("--version", action="store_true",
+                    help="installed version and path, so staleness is visible")
     a = ap.parse_args(argv)
+
+    if a.version:
+        try:
+            from importlib.metadata import version
+            v = version("gcp-pricing-scraper")
+        except Exception:
+            v = "unknown (running from source)"
+        print(f"gcp-pricing {v}\n  module: {os.path.dirname(os.path.abspath(__file__))}\n"
+              f"  upgrade: curl -fsSL https://raw.githubusercontent.com/WandLZhang/"
+              f"gcp-pricing-scraper/main/install.sh | bash")
+        return 0
+
+    if not a.target:
+        ap.error("a product name or URL is required")
 
     terms = [f.lower() for f in a.filter]
 
